@@ -2,6 +2,9 @@
 
 Bot Discord d'auto-attribution de rôle via mot-clé, avec panel interactif et système de permissions owners/buyers.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Beep-Twix/Bot-AutoRank/blob/main/LICENSE)
+[![discord.js](https://img.shields.io/badge/discord.js-v14-5865F2.svg)](https://discord.js.org/)
+
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
 ---
@@ -20,8 +23,8 @@ Bot Discord d'auto-attribution de rôle via mot-clé, avec panel interactif et s
 ### Installation
 
 ```bash
-git clone https://github.com/<ton-pseudo>/<nom-du-repo>.git
-cd <nom-du-repo>
+git clone https://github.com/Beep-Twix/Bot-AutoRank.git
+cd Bot-AutoRank
 npm install
 ```
 
@@ -80,8 +83,8 @@ Préfixe par défaut : `+` (modifiable avec `+prefix`)
 ### Installation
 
 ```bash
-git clone https://github.com/<your-username>/<repo-name>.git
-cd <repo-name>
+git clone https://github.com/Beep-Twix/Bot-AutoRank.git
+cd Bot-AutoRank
 npm install
 ```
 
@@ -123,3 +126,9 @@ Default prefix: `+` (changeable with `+prefix`)
 | `restart` | Restarts the bot |
 
 > All commands require owner or buyer status.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE) — *projet sous licence MIT*.
