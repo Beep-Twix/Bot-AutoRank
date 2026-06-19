@@ -2,7 +2,6 @@
 
 Bot Discord d'auto-attribution de rôle via mot-clé, avec panel interactif et système de permissions owners/buyers.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Beep-Twix/Bot-AutoRank/blob/main/LICENSE)
 [![discord.js](https://img.shields.io/badge/discord.js-v14-5865F2.svg)](https://discord.js.org/)
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
