@@ -127,7 +127,3 @@ Default prefix: `+` (changeable with `+prefix`)
 > All commands require owner or buyer status.
 
 ---
-
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE) — *projet sous licence MIT*.
