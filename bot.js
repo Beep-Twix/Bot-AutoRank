@@ -10,6 +10,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
   StringSelectMenuBuilder,
+  MessageFlags,
 } = require("discord.js");
 
 require("dotenv").config();
@@ -58,6 +59,55 @@ const typeMap = {
   watching: 3,
   competing: 5,
 };
+const ROLES_PER_PAGE = 25; // limite Discord : 25 options max par menu déroulant
+
+// Construit les composants du panel de sélection de rôle pour une page donnée.
+// Retourne { rows, totalPages, page } — rows = [menu] ou [menu, boutons de navigation].
+function buildRolePanelComponents(guild, page = 0) {
+  const allRoles = [...guild.roles.cache
+    .filter(r => r.name !== "@everyone" && r.editable)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .values()];
+
+  if (allRoles.length === 0) return { rows: [], totalPages: 0, page: 0 };
+
+  const totalPages = Math.ceil(allRoles.length / ROLES_PER_PAGE);
+  // borne la page demandée dans [0, totalPages - 1]
+  page = Math.min(Math.max(0, page), totalPages - 1);
+
+  const start = page * ROLES_PER_PAGE;
+  const pageRoles = allRoles.slice(start, start + ROLES_PER_PAGE);
+
+  const options = pageRoles.map(r => ({ label: r.name, value: r.id }));
+  const menuRow = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("choix_role")
+      .setPlaceholder(`Choisir un rôle (page ${page + 1}/${totalPages})`)
+      .addOptions(options)
+  );
+
+  const rows = [menuRow];
+
+  // Boutons de navigation uniquement s'il y a plus d'une page
+  if (totalPages > 1) {
+    const navRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`role_page_${page - 1}`)
+        .setLabel("◀️ Précédent")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page === 0),
+      new ButtonBuilder()
+        .setCustomId(`role_page_${page + 1}`)
+        .setLabel("▶️ Suivant")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page === totalPages - 1)
+    );
+    rows.push(navRow);
+  }
+
+  return { rows, totalPages, page };
+}
+
 // Mise à jour auto du panel
 async function updatePanel(guild) {
   if (!panelData.messageId || !panelData.channelId) return;
@@ -75,27 +125,103 @@ async function updatePanel(guild) {
         { name: "Rôle", value: role ? role.name : "*Aucun*" }
       );
 
-    const options = guild.roles.cache
-      .filter(r => r.name !== "@everyone" && r.editable)
-      .map(r => ({ label: r.name, value: r.id }));
-
-    const row1 = new ActionRowBuilder().addComponents(
+    const keywordRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`modifier_motcle`)
         .setLabel("✏️ Modifier mot-clé")
         .setStyle(ButtonStyle.Primary)
     );
 
-    const row2 = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`choix_role`)
-        .setPlaceholder("Choisir un rôle")
-        .addOptions(options)
-    );
+    const { rows: roleRows } = buildRolePanelComponents(guild, 0);
+    if (roleRows.length === 0) {
+      console.warn("⚠️ updatePanel: aucun rôle éligible (vérifie la position du rôle du bot dans la hiérarchie).");
+    }
 
-    await msg.edit({ embeds: [embed], components: [row2, row1] });
+    // Bouton "Modifier mot-clé" toujours en dernière rangée
+    const components = [...roleRows, keywordRow];
+
+    await msg.edit({ embeds: [embed], components });
   } catch (err) {
     console.error("Erreur updatePanel:", err);
+  }
+}
+
+// Envoie un embed dans le salon de logs configuré (ne fait rien si non configuré ou introuvable)
+async function sendLog(guild, embed) {
+  if (!config.logChannelId) return;
+  const channel = guild.channels.cache.get(config.logChannelId);
+  if (!channel) {
+    console.warn(`⚠️ sendLog: salon de logs ${config.logChannelId} introuvable (supprimé ? mauvaise guild ?).`);
+    return;
+  }
+  try {
+    await channel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error("Erreur sendLog (le bot a-t-il la permission d'écrire dans le salon de logs ?):", err.message);
+  }
+}
+
+// Vérifie le pseudo d'un membre et ajoute/retire le rôle en fonction du mot-clé
+async function applyKeywordRole(member) {
+  if (!config.keyword || !config.roleId) return;
+  if (member.user.bot) return;
+
+  const role = member.guild.roles.cache.get(config.roleId);
+  if (!role) return;
+
+  // Le bot ne peut pas attribuer un rôle plus haut que le sien dans la hiérarchie
+  if (!role.editable) return;
+
+  const displayName = (member.nickname || member.user.username || "").toLowerCase();
+  const hasKeyword = displayName.includes(config.keyword.toLowerCase());
+  const hasRole = member.roles.cache.has(role.id);
+
+  try {
+    if (hasKeyword && !hasRole) {
+      await member.roles.add(role, "Mot-clé détecté dans le pseudo");
+      await sendLog(member.guild, new EmbedBuilder()
+        .setTitle("➕ Rôle attribué")
+        .setColor(0x57f287)
+        .setThumbnail(member.user.displayAvatarURL())
+        .addFields(
+          { name: "Membre", value: `<@${member.id}> (\`${member.user.tag}\`)` },
+          { name: "Rôle", value: `${role}` },
+          { name: "Raison", value: `Mot-clé \`${config.keyword}\` détecté dans le pseudo` }
+        )
+        .setFooter({ text: globalFooter })
+        .setTimestamp());
+    } else if (!hasKeyword && hasRole) {
+      await member.roles.remove(role, "Mot-clé absent du pseudo");
+      await sendLog(member.guild, new EmbedBuilder()
+        .setTitle("➖ Rôle retiré")
+        .setColor(0xed4245)
+        .setThumbnail(member.user.displayAvatarURL())
+        .addFields(
+          { name: "Membre", value: `<@${member.id}> (\`${member.user.tag}\`)` },
+          { name: "Rôle", value: `${role}` },
+          { name: "Raison", value: `Mot-clé \`${config.keyword}\` absent du pseudo` }
+        )
+        .setFooter({ text: globalFooter })
+        .setTimestamp());
+    }
+  } catch (err) {
+    console.error(`Erreur applyKeywordRole pour ${member.id}:`, err);
+  }
+}
+
+// Revérifie tous les membres du serveur (utilisé après un changement de mot-clé/rôle via le panel)
+async function applyKeywordRoleToAll(guild) {
+  if (!config.keyword || !config.roleId) return;
+  let members;
+  try {
+    members = await guild.members.fetch();
+  } catch (err) {
+    console.error("Erreur fetch membres (timeout probable, vérifie le 'Server Members Intent' sur le Developer Portal). Utilisation du cache existant à la place:", err.message);
+    members = guild.members.cache; // fallback : on traite au moins les membres déjà en cache
+  }
+
+  for (const member of members.values()) {
+    await applyKeywordRole(member);
   }
 }
 
@@ -105,6 +231,17 @@ client.once("ready", () => {
   if (config.presence) client.user.setPresence({ status: config.presence });
 });
 let globalFooter = "|*Autorank|"; // footer par défaut
+
+// Détection du mot-clé : arrivée d'un membre
+client.on("guildMemberAdd", async member => {
+  await applyKeywordRole(member);
+});
+
+// Détection du mot-clé : changement de pseudo (ou autre update membre)
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  if (oldMember.nickname === newMember.nickname && oldMember.user.username === newMember.user.username) return;
+  await applyKeywordRole(newMember);
+});
 
 // Commandes texte
 client.on("messageCreate", async message => {
@@ -116,7 +253,7 @@ client.on("messageCreate", async message => {
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const cmd = args.shift().toLowerCase();
 
-  if (["panel", "prefix", "owner", "unowner", "logs", "owners","help","status","setpresence","setpp","setbanner","footer", "restart", "ping"].includes(cmd) &&  !isOwner(message.author.id)) {
+  if (["panel", "prefix", "owner", "unowner", "logs", "owners","help","status","setpresence","setpp","setbanner","footer", "restart", "ping", "clear"].includes(cmd) &&  !isOwner(message.author.id)) {
     return message.reply(`❌ <@${message.author.id}> vous n'êtes pas autorisé à utiliser cette commande.`);
   }
   if (cmd === 'help') {
@@ -131,7 +268,7 @@ client.on("messageCreate", async message => {
         { name: `${prefix}unowner @user`, value: '❌ - Retire un owner.' },
         { name: `${prefix}owners`, value: '❔ - Affiche la liste des owners.' },
         { name: `${prefix}logs #channel`, value: '📁 - Configure le salon de logs.' },
-        { name: `${prefix}status <type> <texte>`, value: '🤖 - Change le status du bot.' },
+        { name: `${prefix}status <type> <texte>`, value: `🤖 - Change le status du bot.\nTypes : playing, streaming, listening, watching, competing\nEx : \`${prefix}status playing Minecraft\`` },
         { name: `${prefix}setpresence <online|dnd|idle|invisible>`, value: '🤖 -Change le statut de présence.' },
         { name: `${prefix}setpp <url>`, value: '✅ - Change l\'image de profil du bot.' },
         { name: `${prefix}setbanner <url>`, value: '✅ - Change la banniere du bot.' },
@@ -163,25 +300,20 @@ client.on("messageCreate", async message => {
       )
       .setFooter({ text: globalFooter });
 
-    const options = message.guild.roles.cache
-      .filter(r => r.name !== "@everyone" && r.editable)
-      .map(r => ({ label: r.name, value: r.id }));
-
-    const row1 = new ActionRowBuilder().addComponents(
+    const keywordRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("modifier_motcle")
         .setLabel("✏️ Modifier le Tag")
         .setStyle(ButtonStyle.Primary)
     );
 
-    const row2 = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("choix_role")
-        .setPlaceholder("Choisir un rôle")
-        .addOptions(options)
-    );
+    const { rows: roleRows } = buildRolePanelComponents(message.guild, 0);
+    if (roleRows.length === 0) {
+      return message.reply("❌ Aucun rôle disponible pour le panel. Vérifie que le rôle du bot est positionné **au-dessus** des rôles que tu veux pouvoir attribuer (Paramètres du serveur → Rôles), et qu'il ne s'agit pas uniquement de rôles gérés automatiquement (bot, booster...).");
+    }
 
-    const sent = await message.channel.send({ embeds: [embed], components: [row2, row1] });
+    // Bouton "Modifier le Tag" toujours en dernière rangée
+    const sent = await message.channel.send({ embeds: [embed], components: [...roleRows, keywordRow] });
     panelData = { messageId: sent.id, channelId: message.channel.id };
     saveAll();
   }
@@ -249,12 +381,21 @@ client.on("messageCreate", async message => {
     sent.edit(`🏓 Pong ! Latence : ${latency}ms | Latence API : ${apiLatency}ms`);
   }
 
-  if (cmd === "status"){ 
-    const typeStr = args.shift().toLowerCase();
-    if (!(typeStr in typeMap)) return message.reply("❌ Type invalide. Choisis parmi: playing, streaming, listening, watching, competing");
+  if (cmd === "status"){
+    const statusExamples = [
+      "**Exemples :**",
+      `\`${prefix}status playing Minecraft\` → 🎮 Joue à Minecraft`,
+      `\`${prefix}status streaming en live !\` → 🔴 En direct : en live !`,
+      `\`${prefix}status listening Spotify\` → 🎧 Écoute Spotify`,
+      `\`${prefix}status watching Netflix\` → 📺 Regarde Netflix`,
+      `\`${prefix}status competing un tournoi\` → 🏆 Participe à un tournoi`,
+    ].join("\n");
+
+    const typeStr = (args.shift() || "").toLowerCase();
+    if (!(typeStr in typeMap)) return message.reply(`❌ Type invalide. Choisis parmi : playing, streaming, listening, watching, competing\n\n${statusExamples}`);
 
     const statusText = args.join(" ");
-    if (!statusText) return message.reply("❌ Tu dois indiquer le texte du status.");
+    if (!statusText) return message.reply(`❌ Tu dois indiquer le texte du status.\n\n${statusExamples}`);
 
     try {
       await client.user.setActivity(statusText, { type: typeMap[typeStr] });
@@ -334,20 +475,42 @@ client.on("interactionCreate", async interaction => {
         );
       return interaction.showModal(modal);
     }
+    // Navigation entre les pages de rôles : customId = role_page_<n>
+    if (interaction.customId.startsWith("role_page_")) {
+      const page = parseInt(interaction.customId.slice("role_page_".length), 10) || 0;
+      const { rows: roleRows } = buildRolePanelComponents(interaction.guild, page);
+
+      // On reconstruit le bouton "mot-clé" à l'identique pour le réafficher
+      const keywordRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("modifier_motcle")
+          .setLabel("✏️ Modifier le Tag")
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      return interaction.update({ components: [...roleRows, keywordRow] });
+    }
   } else if (interaction.isStringSelectMenu()) {
     if (interaction.customId === "choix_role") {
       const roleId = interaction.values[0];
+      const role = interaction.guild.roles.cache.get(roleId);
       config.roleId = roleId;
       saveAll();
+
+      await interaction.reply({ content: `✅ Rôle mis à jour : ${role ? role.name : roleId}\n⏳ Mise à jour des membres en cours...`, flags: MessageFlags.Ephemeral });
+
       await updatePanel(interaction.guild);
-      return interaction.reply({ content: `✅ Rôle mis à jour.`, ephemeral: true });
+      applyKeywordRoleToAll(interaction.guild).catch(err => console.error("Erreur applyKeywordRoleToAll:", err));
     }
   } else if (interaction.isModalSubmit()) {
     if (interaction.customId === "set_keyword") {
       config.keyword = interaction.fields.getTextInputValue("new_keyword");
       saveAll();
+
+      await interaction.reply({ content: `✅ Tag mis à jour.\n⏳ Mise à jour des membres en cours...`, flags: MessageFlags.Ephemeral });
+
       await updatePanel(interaction.guild);
-      return interaction.reply({ content: `✅ Tag mis à jour.`, ephemeral: true });
+      applyKeywordRoleToAll(interaction.guild).catch(err => console.error("Erreur applyKeywordRoleToAll:", err));
     }
   }
 });
